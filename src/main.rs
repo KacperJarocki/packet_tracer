@@ -6,8 +6,9 @@ use cyw43_pio::PioSpi;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::Stack;
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
+use embassy_rp::peripherals::{DMA_CH0, PIO0, UART0};
 use embassy_rp::pio::{InterruptHandler, Pio};
+use embassy_rp::uart::{self, Blocking};
 use embassy_rp::{bind_interrupts, gpio};
 use gpio::{Input, Level, Output, Pull};
 use static_cell::StaticCell;
@@ -32,7 +33,7 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-    let mut led = Output::new(p.PIN_17, Level::High);
+    let led = Output::new(p.PIN_17, Level::High);
     let led_button = Input::new(p.PIN_16, Pull::Up);
     spawner.spawn(button_task(led_button, led)).unwrap();
     let network_button = Input::new(p.PIN_18, Pull::Up);
@@ -60,7 +61,10 @@ async fn main(spawner: Spawner) {
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
 
-    unwrap!(spawner.spawn(print_networks_task(network_button, control)));
+    let config = uart::Config::default();
+    let uart =
+        uart::Uart::new_with_rtscts_blocking(p.UART0, p.PIN_0, p.PIN_1, p.PIN_3, p.PIN_2, config);
+    unwrap!(spawner.spawn(scan_networks_task(network_button, control, uart)));
 }
 
 #[embassy_executor::task]
@@ -72,7 +76,11 @@ async fn button_task(mut button: Input<'static>, mut led: Output<'static>) {
     }
 }
 #[embassy_executor::task]
-async fn print_networks_task(mut button: Input<'static>, mut control: cyw43::Control<'static>) {
+async fn scan_networks_task(
+    mut button: Input<'static>,
+    mut control: cyw43::Control<'static>,
+    mut uart: uart::Uart<'static, UART0, Blocking>,
+) {
     loop {
         button.wait_for_falling_edge().await;
         info!("print networks");
@@ -80,6 +88,11 @@ async fn print_networks_task(mut button: Input<'static>, mut control: cyw43::Con
         while let Some(bss) = scanner.next().await {
             if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
                 info!("scanned {} == {:x}", ssid_str, bss.bssid);
+                uart.blocking_write("Network: ".as_bytes()).unwrap();
+                uart.blocking_write(ssid_str.as_bytes()).unwrap();
+                uart.blocking_write(" bssid: ".as_bytes()).unwrap();
+                uart.blocking_write(&bss.bssid).unwrap();
+                uart.blocking_write("\n\r".as_bytes()).unwrap();
             }
         }
     }
