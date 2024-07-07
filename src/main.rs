@@ -10,13 +10,20 @@ use embassy_rp::peripherals::{DMA_CH0, PIO0, UART0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::uart::{self, Blocking};
 use embassy_rp::{bind_interrupts, gpio};
+use embedded_graphics::{
+    mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    text::{Baseline, Text},
+};
 use gpio::{Input, Level, Output, Pull};
+use ssd1306::{mode::BufferedGraphicsMode, prelude::*, I2CDisplayInterface, Ssd1306};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
-
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
 });
+use embassy_rp::i2c::{self, Config};
 
 #[embassy_executor::task]
 async fn wifi_task(
@@ -33,9 +40,11 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
+    info!("set up led");
     let led = Output::new(p.PIN_17, Level::High);
     let led_button = Input::new(p.PIN_16, Pull::Up);
     spawner.spawn(button_task(led_button, led)).unwrap();
+    info!("network set up");
     let network_button = Input::new(p.PIN_18, Pull::Up);
     let fw = include_bytes!("../../../embassy/cyw43-firmware/43439A0.bin");
     let clm = include_bytes!("../../../embassy/cyw43-firmware/43439A0_clm.bin");
@@ -52,6 +61,28 @@ async fn main(spawner: Spawner) {
         p.DMA_CH0,
     );
 
+    info!("set up i2c ");
+    let sda = p.PIN_20;
+    let scl = p.PIN_21;
+    let mut i2c = i2c::I2c::new_blocking(p.I2C0, scl, sda, Config::default());
+    let interface = I2CDisplayInterface::new(i2c);
+    let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
+        .into_buffered_graphics_mode();
+    display.init().unwrap();
+    let text_style = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(BinaryColor::On)
+        .build();
+
+    Text::with_baseline("Hello world!", Point::zero(), text_style, Baseline::Top)
+        .draw(&mut display)
+        .unwrap();
+
+    Text::with_baseline("Hello Rust!", Point::new(0, 16), text_style, Baseline::Top)
+        .draw(&mut display)
+        .unwrap();
+
+    display.flush().unwrap();
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
     let (_net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
