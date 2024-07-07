@@ -69,14 +69,6 @@ async fn main(spawner: Spawner) {
     let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
     display.init().unwrap();
-    let text_style = MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(BinaryColor::On)
-        .build();
-
-    Text::with_baseline("Hello world!", Point::zero(), text_style, Baseline::Top)
-        .draw(&mut display)
-        .unwrap();
 
     Text::with_baseline("Hello Rust!", Point::new(0, 16), text_style, Baseline::Top)
         .draw(&mut display)
@@ -96,6 +88,23 @@ async fn main(spawner: Spawner) {
     let uart =
         uart::Uart::new_with_rtscts_blocking(p.UART0, p.PIN_0, p.PIN_1, p.PIN_3, p.PIN_2, config);
     unwrap!(spawner.spawn(scan_networks_task(network_button, control, uart)));
+}
+#[embassy_executor::task]
+async fn change_display_output(
+    mut display: Ssd1306<
+        I2CDisplayInterface,
+        DisplaySize128x64,
+        ssd1306::rotation::DisplayRotation,
+    >,
+    mess: &str,
+) {
+    let text_style = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(BinaryColor::On)
+        .build();
+    Text::with_baseline("Hello world!", Point::zero(), text_style, Baseline::Top)
+        .draw(&mut display)
+        .unwrap();
 }
 
 #[embassy_executor::task]
