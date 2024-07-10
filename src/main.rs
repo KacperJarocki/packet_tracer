@@ -6,7 +6,7 @@ use cyw43_pio::PioSpi;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::Stack;
-use embassy_rp::peripherals::{DMA_CH0, PIO0, UART0};
+use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0, UART0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::uart::{self, Blocking};
 use embassy_rp::{bind_interrupts, gpio};
@@ -23,7 +23,7 @@ use {defmt_rtt as _, panic_probe as _};
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
 });
-use embassy_rp::i2c::{self, Config};
+use embassy_rp::i2c::{self, Config, I2c};
 
 #[embassy_executor::task]
 async fn wifi_task(
@@ -70,11 +70,8 @@ async fn main(spawner: Spawner) {
         .into_buffered_graphics_mode();
     display.init().unwrap();
 
-    Text::with_baseline("Hello Rust!", Point::new(0, 16), text_style, Baseline::Top)
-        .draw(&mut display)
-        .unwrap();
+    unwrap!(spawner.spawn(change_display_output(display, "Hello World!")));
 
-    display.flush().unwrap();
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
     let (_net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
@@ -92,19 +89,21 @@ async fn main(spawner: Spawner) {
 #[embassy_executor::task]
 async fn change_display_output(
     mut display: Ssd1306<
-        I2CDisplayInterface,
+        I2CInterface<I2c<'static, I2C0, i2c::Blocking>>,
         DisplaySize128x64,
-        ssd1306::rotation::DisplayRotation,
+        BufferedGraphicsMode<DisplaySize128x64>,
     >,
-    mess: &str,
+    mess: &'static str,
 ) {
+    info!("displaying");
     let text_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
         .text_color(BinaryColor::On)
         .build();
-    Text::with_baseline("Hello world!", Point::zero(), text_style, Baseline::Top)
+    Text::with_baseline(mess, Point::zero(), text_style, Baseline::Top)
         .draw(&mut display)
         .unwrap();
+    info!("displayed");
 }
 
 #[embassy_executor::task]
