@@ -61,17 +61,6 @@ async fn main(spawner: Spawner) {
         p.DMA_CH0,
     );
 
-    info!("set up i2c ");
-    let sda = p.PIN_20;
-    let scl = p.PIN_21;
-    let mut i2c = i2c::I2c::new_blocking(p.I2C0, scl, sda, Config::default());
-    let interface = I2CDisplayInterface::new(i2c);
-    let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
-        .into_buffered_graphics_mode();
-    display.init().unwrap();
-
-    unwrap!(spawner.spawn(change_display_output(display, "Hello World!")));
-
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
     let (_net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
@@ -85,6 +74,20 @@ async fn main(spawner: Spawner) {
     let uart =
         uart::Uart::new_with_rtscts_blocking(p.UART0, p.PIN_0, p.PIN_1, p.PIN_3, p.PIN_2, config);
     unwrap!(spawner.spawn(scan_networks_task(network_button, control, uart)));
+
+    info!("set up i2c ");
+    let sda = p.PIN_20;
+    let scl = p.PIN_21;
+    let mut i2c = i2c::I2c::new_blocking(p.I2C0, scl, sda, Config::default());
+    let interface = I2CDisplayInterface::new(i2c);
+    let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
+        .into_buffered_graphics_mode();
+    if display.init().is_err() {
+        info!("display init failed");
+    } else {
+        info!("display init successful");
+    }
+    unwrap!(spawner.spawn(change_display_output(display, "Hello World!")));
 }
 #[embassy_executor::task]
 async fn change_display_output(
@@ -95,14 +98,25 @@ async fn change_display_output(
     >,
     mess: &'static str,
 ) {
-    info!("displaying");
+    info!("clearing display");
+    if display.clear(BinaryColor::Off).is_err() {
+        info!("clearing failed");
+    } else {
+        info!("clearing successful");
+    }
     let text_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
         .text_color(BinaryColor::On)
         .build();
+    info!("displaying mess {}", mess);
     Text::with_baseline(mess, Point::zero(), text_style, Baseline::Top)
         .draw(&mut display)
         .unwrap();
+    if display.flush().is_err() {
+        info!("flushing failed");
+    } else {
+        info!("flushing successful");
+    }
     info!("displayed");
 }
 
