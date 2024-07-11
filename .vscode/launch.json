@@ -1,0 +1,39 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "preLaunchTask": "rust: cargo build",
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "name": "packet_tracer_debug",
+      "cwd": "${workspaceFolder}",
+      "chip": "rp2040",
+      "connectUnderReset": false,
+      "speed": 4000,
+      "runtimeExecutable": "probe-rs",
+      "runtimeArgs": [
+        "dap-server"
+      ],
+      "flashingConfig": {
+        "flashingEnabled": true,
+        "resetAfterFlashing": true,
+        "haltAfterReset": true
+      },
+      "coreConfigs": [
+        {
+          "coreIndex": 0,
+          "programBinary": "target/thumbv6m-none-eabi/debug/packet_tracer",
+          "chip": "RP2040",
+          "rttEnabled": true,
+          "options": {
+            "env": {
+              "DEFMT_LOG": "debug"
+            }
+          }
+        }
+      ],
+      "consoleLogLevel": "Info",
+      "wireProtocol": "Swd"
+    }
+  ]
+}
