@@ -10,6 +10,7 @@ use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0, UART0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::uart::{self, Blocking};
 use embassy_rp::{bind_interrupts, gpio};
+use embassy_time::Timer;
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
@@ -23,7 +24,16 @@ use {defmt_rtt as _, panic_probe as _};
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
 });
+use embassy_executor::Executor;
 use embassy_rp::i2c::{self, Config, I2c};
+use embassy_rp::multicore::{self, spawn_core1};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
+
+static mut CORE1_STACK: multicore::Stack<4096> = multicore::Stack::new();
+static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
+static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
+static CHANNEL: Channel<CriticalSectionRawMutex, cyw43::BssInfo, 1> = Channel::new();
 
 #[embassy_executor::task]
 async fn wifi_task(
@@ -41,9 +51,9 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("set up led");
-    let led = Output::new(p.PIN_17, Level::High);
     let led_button = Input::new(p.PIN_16, Pull::Up);
-    spawner.spawn(button_task(led_button, led)).unwrap();
+    let led = Output::new(p.PIN_17, Level::High);
+
     info!("network set up");
     let network_button = Input::new(p.PIN_18, Pull::Up);
     let fw = include_bytes!("../../../embassy/cyw43-firmware/43439A0.bin");
@@ -60,34 +70,60 @@ async fn main(spawner: Spawner) {
         p.PIN_29,
         p.DMA_CH0,
     );
-
-    static STATE: StaticCell<cyw43::State> = StaticCell::new();
-    let state = STATE.init(cyw43::State::new());
-    let (_net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
-    unwrap!(spawner.spawn(wifi_task(runner)));
-    control.init(clm).await;
-    control
-        .set_power_management(cyw43::PowerManagementMode::PowerSave)
-        .await;
-
     let config = uart::Config::default();
     let uart =
         uart::Uart::new_with_rtscts_blocking(p.UART0, p.PIN_0, p.PIN_1, p.PIN_3, p.PIN_2, config);
-    unwrap!(spawner.spawn(scan_networks_task(network_button, control, uart)));
+    static STATE: StaticCell<cyw43::State> = StaticCell::new();
+    let state = STATE.init(cyw43::State::new());
+    let (_net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
+    spawn_core1(
+        p.CORE1,
+        unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
+        move || {
+            let executor1 = EXECUTOR1.init(Executor::new());
+            info!("set up i2c ");
+            let sda = p.PIN_20;
+            let scl = p.PIN_21;
+            let mut i2c = i2c::I2c::new_blocking(p.I2C0, scl, sda, Config::default());
+            let interface = I2CDisplayInterface::new(i2c);
+            let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
+                .into_buffered_graphics_mode();
+            if display.init().is_err() {
+                info!("display init failed");
+            } else {
+                info!("display init successful");
+            }
+            display.clear(BinaryColor::Off).unwrap();
+            executor1.run(|spawner| {
+                if spawner
+                    .spawn(change_display_output(display, "hello there form core 1"))
+                    .is_err()
+                {
+                    info!("fail to spawn  change_display_output");
+                } else {
+                    info!("spawned change_display_output");
+                }
 
-    info!("set up i2c ");
-    let sda = p.PIN_20;
-    let scl = p.PIN_21;
-    let mut i2c = i2c::I2c::new_blocking(p.I2C0, scl, sda, Config::default());
-    let interface = I2CDisplayInterface::new(i2c);
-    let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
-        .into_buffered_graphics_mode();
-    if display.init().is_err() {
-        info!("display init failed");
-    } else {
-        info!("display init successful");
-    }
-    unwrap!(spawner.spawn(change_display_output(display, "Hello World!")));
+                if spawner.spawn(button_task(led_button, led)).is_err() {
+                    info!("fail to spawn button_task");
+                } else {
+                    info!("spawned button_task");
+                };
+            });
+        },
+    );
+    info!("waitnig for load");
+    control.init(clm).await;
+    info!("set power management");
+    control
+        .set_power_management(cyw43::PowerManagementMode::PowerSave)
+        .await;
+    let executor0 = EXECUTOR0.init(Executor::new());
+    executor0.run(|spawner| {
+        info!("spawning tasks");
+        unwrap!(spawner.spawn(wifi_task(runner)));
+        unwrap!(spawner.spawn(scan_networks_task(control, uart)));
+    });
 }
 #[embassy_executor::task]
 async fn change_display_output(
@@ -130,14 +166,15 @@ async fn button_task(mut button: Input<'static>, mut led: Output<'static>) {
 }
 #[embassy_executor::task]
 async fn scan_networks_task(
-    mut button: Input<'static>,
     mut control: cyw43::Control<'static>,
     mut uart: uart::Uart<'static, UART0, Blocking>,
 ) {
     loop {
-        button.wait_for_falling_edge().await;
+        info!("waiting for 2 seconds");
+        Timer::after_secs(2).await;
         info!("print networks");
         let mut scanner = control.scan(Default::default()).await;
+        info!("scanning");
         while let Some(bss) = scanner.next().await {
             if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
                 info!("scanned {} == {:x}", ssid_str, bss.bssid);
