@@ -93,10 +93,9 @@ async fn main(spawner: Spawner) {
             } else {
                 info!("display init successful");
             }
-            display.clear(BinaryColor::Off).unwrap();
             executor1.run(|spawner| {
                 if spawner
-                    .spawn(change_display_output(display, "hello there form core 1"))
+                    .spawn(change_display_output(display, "hello form core 1"))
                     .is_err()
                 {
                     info!("fail to spawn  change_display_output");
@@ -112,17 +111,11 @@ async fn main(spawner: Spawner) {
             });
         },
     );
-    info!("waitnig for load");
-    control.init(clm).await;
-    info!("set power management");
-    control
-        .set_power_management(cyw43::PowerManagementMode::PowerSave)
-        .await;
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
         info!("spawning tasks");
         unwrap!(spawner.spawn(wifi_task(runner)));
-        unwrap!(spawner.spawn(scan_networks_task(control, uart)));
+        unwrap!(spawner.spawn(scan_networks_task(control, uart, clm)));
     });
 }
 #[embassy_executor::task]
@@ -134,26 +127,38 @@ async fn change_display_output(
     >,
     mess: &'static str,
 ) {
-    info!("clearing display");
-    if display.clear(BinaryColor::Off).is_err() {
-        info!("clearing failed");
-    } else {
-        info!("clearing successful");
+    loop {
+        Timer::after_millis(500).await;
+        info!("clearing display");
+        if display.clear(BinaryColor::Off).is_err() {
+            info!("clearing failed");
+        } else {
+            info!("clearing successful");
+        }
+        let text_style = MonoTextStyleBuilder::new()
+            .font(&FONT_6X10)
+            .text_color(BinaryColor::On)
+            .build();
+        info!("displaying mess {}", mess);
+        Text::with_baseline(mess, Point::zero(), text_style, Baseline::Top)
+            .draw(&mut display)
+            .unwrap();
+        let bss = CHANNEL.receive().await;
+
+        if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
+            info!("scanned {} == {:x}", ssid_str, bss.bssid);
+            Text::with_baseline(ssid_str, Point::new(0, 10), text_style, Baseline::Top)
+                .draw(&mut display)
+                .unwrap();
+        }
+
+        if display.flush().is_err() {
+            info!("flushing failed");
+        } else {
+            info!("flushing successful");
+        }
+        info!("displayed");
     }
-    let text_style = MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(BinaryColor::On)
-        .build();
-    info!("displaying mess {}", mess);
-    Text::with_baseline(mess, Point::zero(), text_style, Baseline::Top)
-        .draw(&mut display)
-        .unwrap();
-    if display.flush().is_err() {
-        info!("flushing failed");
-    } else {
-        info!("flushing successful");
-    }
-    info!("displayed");
 }
 
 #[embassy_executor::task]
@@ -168,7 +173,14 @@ async fn button_task(mut button: Input<'static>, mut led: Output<'static>) {
 async fn scan_networks_task(
     mut control: cyw43::Control<'static>,
     mut uart: uart::Uart<'static, UART0, Blocking>,
+    clm: &'static [u8],
 ) {
+    info!("waitnig for load");
+    control.init(clm).await;
+    info!("set power management");
+    control
+        .set_power_management(cyw43::PowerManagementMode::PowerSave)
+        .await;
     loop {
         info!("waiting for 2 seconds");
         Timer::after_secs(2).await;
@@ -176,6 +188,9 @@ async fn scan_networks_task(
         let mut scanner = control.scan(Default::default()).await;
         info!("scanning");
         while let Some(bss) = scanner.next().await {
+            Timer::after_secs(1).await;
+            CHANNEL.send(bss).await;
+            info!("sending bss to channel");
             if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
                 info!("scanned {} == {:x}", ssid_str, bss.bssid);
                 uart.blocking_write("Network: ".as_bytes()).unwrap();
