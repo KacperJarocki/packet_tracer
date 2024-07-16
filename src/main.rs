@@ -182,14 +182,13 @@ async fn scan_networks_task(
     control
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
+    info!("waiting for 2 seconds");
+    Timer::after_secs(2).await;
     loop {
-        info!("waiting for 2 seconds");
-        Timer::after_secs(2).await;
         info!("print networks");
         let mut scanner = control.scan(Default::default()).await;
         info!("scanning");
         while let Some(bss) = scanner.next().await {
-            Timer::after_secs(1).await;
             CHANNEL.send(bss).await;
             info!("sending bss to channel");
             if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
