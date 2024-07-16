@@ -14,6 +14,7 @@ use embassy_rp::{bind_interrupts, gpio};
 use embassy_time::Timer;
 use embedded_graphics::{
     mono_font::{ascii::FONT_5X7, MonoTextStyleBuilder},
+    mono_font::{ascii::FONT_4X6, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Baseline, Text},
@@ -128,16 +129,27 @@ async fn change_display_output(
     >,
     mess: &'static str,
 ) {
+    info!("clearing display");
+    if display.clear(BinaryColor::Off).is_err() {
+        info!("clearing failed");
+    } else {
+        info!("clearing successful");
+    }
+    if display.flush().is_err() {
+        info!("flushing failed");
+    } else {
+        info!("flushing successful");
+    }
     loop {
-        Timer::after_millis(50).await;
         info!("clearing display");
         if display.clear(BinaryColor::Off).is_err() {
             info!("clearing failed");
         } else {
             info!("clearing successful");
         }
+        Timer::after_millis(50).await;
         let text_style = MonoTextStyleBuilder::new()
-            .font(&FONT_5X7)
+            .font(&FONT_4X6)
             .text_color(BinaryColor::On)
             .build();
         info!("displaying mess {}", mess);
