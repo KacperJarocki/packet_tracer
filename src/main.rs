@@ -188,6 +188,8 @@ async fn scan_networks_task(
     control
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
+    info!("waiting for 2 seconds");
+    Timer::after_secs(2).await;
     loop {
         info!("waiting for button");
         network_button.wait_for_falling_edge().await;
