@@ -55,7 +55,6 @@ async fn main(spawner: Spawner) {
     info!("set up led");
     let led_button = Input::new(p.PIN_16, Pull::Up);
     let led = Output::new(p.PIN_17, Level::High);
-
     info!("network set up");
     let network_button = Input::new(p.PIN_18, Pull::Up);
     let fw = include_bytes!("../../../embassy/cyw43-firmware/43439A0.bin");
@@ -95,6 +94,7 @@ async fn main(spawner: Spawner) {
             } else {
                 info!("display init successful");
             }
+            info!("executcor should run");
             executor1.run(|spawner| {
                 if spawner
                     .spawn(change_display_output(display, "hello form core 1"))
@@ -104,7 +104,6 @@ async fn main(spawner: Spawner) {
                 } else {
                     info!("spawned change_display_output");
                 }
-
                 if spawner.spawn(button_task(led_button, led)).is_err() {
                     info!("fail to spawn button_task");
                 } else {
