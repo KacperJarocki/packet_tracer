@@ -32,7 +32,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use heapless::Vec;
 
-static mut CORE1_STACK: multicore::Stack<4096> = multicore::Stack::new();
+static mut CORE1_STACK: multicore::Stack<8192> = multicore::Stack::new();
 static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 static CHANNEL: Channel<CriticalSectionRawMutex, Vec<cyw43::BssInfo, 10>, 1> = Channel::new();
@@ -52,9 +52,6 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-    info!("set up led");
-    let led_button = Input::new(p.PIN_16, Pull::Up);
-    let led = Output::new(p.PIN_17, Level::High);
     info!("network set up");
     let network_button = Input::new(p.PIN_18, Pull::Up);
     let fw = include_bytes!("../../../embassy/cyw43-firmware/43439A0.bin");
@@ -82,6 +79,9 @@ async fn main(spawner: Spawner) {
         unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
         move || {
             let executor1 = EXECUTOR1.init(Executor::new());
+            info!("set up led");
+            let led_button = Input::new(p.PIN_16, Pull::Up);
+            let led = Output::new(p.PIN_17, Level::High);
             info!("set up i2c ");
             let sda = p.PIN_20;
             let scl = p.PIN_21;
@@ -180,7 +180,7 @@ async fn scan_networks_task(
     mut control: cyw43::Control<'static>,
     mut uart: uart::Uart<'static, UART0, Blocking>,
     clm: &'static [u8],
-    mut network_button: Input<'static>,
+    mut button: Input<'static>,
 ) {
     info!("waitnig for load");
     control.init(clm).await;
@@ -217,5 +217,7 @@ async fn scan_networks_task(
 
         info!("sending bss_vec to channel");
         CHANNEL.send(bss_vec).await;
+        info!("waiting for button");
+        button.wait_for_falling_edge().await;
     }
 }
