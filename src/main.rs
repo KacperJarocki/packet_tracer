@@ -29,6 +29,7 @@ use embassy_rp::i2c::{self, Config, I2c};
 use embassy_rp::multicore::{self, spawn_core1};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
+use heapless::Vec;
 
 static mut CORE1_STACK: multicore::Stack<4096> = multicore::Stack::new();
 static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
@@ -75,7 +76,7 @@ async fn main(spawner: Spawner) {
         uart::Uart::new_with_rtscts_blocking(p.UART0, p.PIN_0, p.PIN_1, p.PIN_3, p.PIN_2, config);
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
-    let (_net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
+    let (_net_device, control, runner) = cyw43::new(state, pwr, spi, fw).await;
     spawn_core1(
         p.CORE1,
         unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
@@ -84,7 +85,7 @@ async fn main(spawner: Spawner) {
             info!("set up i2c ");
             let sda = p.PIN_20;
             let scl = p.PIN_21;
-            let mut i2c = i2c::I2c::new_blocking(p.I2C0, scl, sda, Config::default());
+            let i2c = i2c::I2c::new_blocking(p.I2C0, scl, sda, Config::default());
             let interface = I2CDisplayInterface::new(i2c);
             let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
                 .into_buffered_graphics_mode();
