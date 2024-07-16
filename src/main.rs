@@ -13,7 +13,6 @@ use embassy_rp::uart::{self, Blocking};
 use embassy_rp::{bind_interrupts, gpio};
 use embassy_time::Timer;
 use embedded_graphics::{
-    mono_font::{ascii::FONT_5X7, MonoTextStyleBuilder},
     mono_font::{ascii::FONT_4X6, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
@@ -159,15 +158,16 @@ async fn change_display_output(
         info!("waitnig for recv");
         let mut bss_vec = CHANNEL.receive().await;
         info!("recv channel to display");
-        for i in 0..10 {
-            let bss = bss_vec.pop().unwrap();
-            let x = 6 * i;
-            if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
-                info!("will display {} == {:x}", ssid_str, bss.bssid);
-                Text::with_baseline(ssid_str, Point::new(0, x), text_style, Baseline::Top)
-                    .draw(&mut display)
-                    .unwrap();
-            }
+        for i in 1..11 {
+            if let Some(bss) = bss_vec.pop() {
+                let x = 6 * i;
+                if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
+                    info!("will display {}", ssid_str);
+                    Text::with_baseline(ssid_str, Point::new(0, x), text_style, Baseline::Top)
+                        .draw(&mut display)
+                        .unwrap();
+                }
+            };
         }
 
         if display.flush().is_err() {
@@ -203,8 +203,6 @@ async fn scan_networks_task(
     info!("waiting for 2 seconds");
     Timer::after_secs(2).await;
     loop {
-        info!("waiting for button");
-        network_button.wait_for_falling_edge().await;
         info!("create a new vec");
         let mut bss_vec: Vec<BssInfo, 10> = Vec::new();
         info!("print networks");
