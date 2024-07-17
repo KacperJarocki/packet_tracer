@@ -97,7 +97,10 @@ async fn main(spawner: Spawner) {
             info!("executcor should run");
             executor1.run(|spawner| {
                 if spawner
-                    .spawn(change_display_output(display, "hello form core 1"))
+                    .spawn(change_display_output(
+                        display,
+                        "Scanned network:         to perform another scan press button",
+                    ))
                     .is_err()
                 {
                     info!("fail to spawn  change_display_output");
@@ -162,10 +165,21 @@ async fn change_display_output(
             if let Some(bss) = bss_vec.pop() {
                 let x = 6 * i;
                 if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
-                    info!("will display {}", ssid_str);
-                    Text::with_baseline(ssid_str, Point::new(0, x), text_style, Baseline::Top)
-                        .draw(&mut display)
-                        .unwrap();
+                    let (ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
+                    info!(
+                        "will display {} length is {} ssid length is {}",
+                        ssid_str,
+                        ssid_str.len(),
+                        bss.ssid_len,
+                    );
+                    Text::with_baseline(
+                        ssid_str.trim(),
+                        Point::new(0, x),
+                        text_style,
+                        Baseline::Top,
+                    )
+                    .draw(&mut display)
+                    .unwrap();
                 }
             };
         }
