@@ -165,7 +165,10 @@ async fn change_display_output(
             if let Some(bss) = bss_vec.pop() {
                 let x = 6 * i;
                 if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
-                    let (ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
+                    let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
+                    if ssid_str.is_empty() {
+                        ssid_str = "Unknown ssid";
+                    }
                     info!(
                         "will display {} length is {} ssid length is {}",
                         ssid_str,
