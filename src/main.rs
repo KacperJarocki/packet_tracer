@@ -35,7 +35,7 @@ use heapless::Vec;
 static mut CORE1_STACK: multicore::Stack<8192> = multicore::Stack::new();
 static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
-static CHANNEL: Channel<CriticalSectionRawMutex, Vec<cyw43::BssInfo, 10>, 1> = Channel::new();
+static CHANNEL: Channel<CriticalSectionRawMutex, cyw43::BssInfo, 1> = Channel::new();
 
 #[embassy_executor::task]
 async fn wifi_task(
@@ -97,10 +97,7 @@ async fn main(spawner: Spawner) {
             info!("executcor should run");
             executor1.run(|spawner| {
                 if spawner
-                    .spawn(change_display_output(
-                        display,
-                        "Scanned network:         to perform another scan press button",
-                    ))
+                    .spawn(change_display_output(display, "Scanned network"))
                     .is_err()
                 {
                     info!("fail to spawn  change_display_output");
@@ -131,6 +128,7 @@ async fn change_display_output(
     >,
     mess: &'static str,
 ) {
+    let mut bss_vec: Vec<BssInfo, 10> = Vec::new();
     info!("clearing display");
     if display.clear(BinaryColor::Off).is_err() {
         info!("clearing failed");
@@ -159,7 +157,13 @@ async fn change_display_output(
             .draw(&mut display)
             .unwrap();
         info!("waitnig for recv");
-        let mut bss_vec = CHANNEL.receive().await;
+        let bss = CHANNEL.receive().await;
+        info!("add BssInfo to vec");
+        if bss_vec.push(bss).is_err() {
+            info!("Vec is overflow")
+        } else {
+            info!("Added bss to Vec")
+        }
         info!("recv channel to display");
         for i in 0..bss_vec.len() {
             let bss: BssInfo = bss_vec[i];
@@ -220,18 +224,11 @@ async fn scan_networks_task(
     info!("waiting for 2 seconds");
     Timer::after_secs(2).await;
     loop {
-        info!("create a new vec");
-        let mut bss_vec: Vec<BssInfo, 10> = Vec::new();
         info!("print networks");
         let mut scanner = control.scan(Default::default()).await;
         info!("scanning");
         while let Some(bss) = scanner.next().await {
-            info!("add BssInfo to vec");
-            if bss_vec.push(bss).is_err() {
-                info!("Vec is overflow")
-            } else {
-                info!("Added bss to Vec")
-            }
+            CHANNEL.send(bss).await;
             if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
                 info!("scanned {} == {:x}", ssid_str, bss.bssid);
                 uart.blocking_write("Network: ".as_bytes()).unwrap();
@@ -242,8 +239,6 @@ async fn scan_networks_task(
             }
         }
 
-        info!("sending bss_vec to channel");
-        CHANNEL.send(bss_vec).await;
         info!("waiting for button");
         button.wait_for_falling_edge().await;
     }
