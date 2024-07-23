@@ -161,30 +161,30 @@ async fn change_display_output(
         info!("waitnig for recv");
         let mut bss_vec = CHANNEL.receive().await;
         info!("recv channel to display");
-        for i in 1..11 {
-            if let Some(bss) = bss_vec.pop() {
-                let x = 6 * i;
-                if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
-                    let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
-                    if ssid_str.is_empty() {
-                        ssid_str = "Unknown ssid";
-                    }
-                    info!(
-                        "will display {} length is {} ssid length is {}",
-                        ssid_str,
-                        ssid_str.len(),
-                        bss.ssid_len,
-                    );
-                    Text::with_baseline(
-                        ssid_str.trim(),
-                        Point::new(0, x),
-                        text_style,
-                        Baseline::Top,
-                    )
-                    .draw(&mut display)
-                    .unwrap();
+        for i in 0..bss_vec.len() {
+            let bss: BssInfo = bss_vec[i];
+            let x = 6 * (i + 1);
+            if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
+                let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
+                if ssid_str.is_empty() {
+                    ssid_str = "Unknown ssid";
                 }
-            };
+                info!(
+                    "will display {} length is {} ssid length is {}",
+                    ssid_str,
+                    ssid_str.len(),
+                    bss.ssid_len,
+                );
+                let postions = x.try_into().unwrap();
+                Text::with_baseline(
+                    ssid_str.trim(),
+                    Point::new(0, postions),
+                    text_style,
+                    Baseline::Top,
+                )
+                .draw(&mut display)
+                .unwrap();
+            }
         }
 
         if display.flush().is_err() {
