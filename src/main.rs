@@ -139,9 +139,9 @@ async fn up_button_task(mut button: Input<'static>) {
 async fn down_button_task(mut button: Input<'static>) {
     loop {
         button.wait_for_falling_edge().await;
-        let mut index = INDEX_NETWORKS.load(Ordering::Relaxed);
-        index -= 1;
-        INDEX_NETWORKS.store(index, Ordering::Relaxed);
+        let index = INDEX_NETWORKS.load(Ordering::Relaxed);
+        let new_index = index.saturating_sub(1);
+        INDEX_NETWORKS.store(new_index, Ordering::Relaxed);
     }
 }
 #[embassy_executor::task]
