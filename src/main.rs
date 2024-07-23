@@ -2,6 +2,7 @@
 #![no_main]
 
 use core::str;
+use core::sync::atomic::{AtomicBool, Ordering};
 use cyw43::BssInfo;
 use cyw43_pio::PioSpi;
 use defmt::{info, *};
@@ -36,6 +37,7 @@ static mut CORE1_STACK: multicore::Stack<8192> = multicore::Stack::new();
 static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 static CHANNEL: Channel<CriticalSectionRawMutex, cyw43::BssInfo, 1> = Channel::new();
+static NEW_INFO_SEND: AtomicBool = AtomicBool::new(false);
 
 #[embassy_executor::task]
 async fn wifi_task(
@@ -197,6 +199,12 @@ async fn change_display_output(
             info!("flushing successful");
         }
         info!("displayed");
+        let info = NEW_INFO_SEND.load(Ordering::Relaxed);
+        if info {
+            info!("creating new vector");
+            bss_vec = Vec::new();
+            NEW_INFO_SEND.store(false, Ordering::Relaxed);
+        }
     }
 }
 
@@ -241,5 +249,7 @@ async fn scan_networks_task(
 
         info!("waiting for button");
         button.wait_for_falling_edge().await;
+        info!("should delete all info in other task");
+        NEW_INFO_SEND.store(true, Ordering::Relaxed)
     }
 }
