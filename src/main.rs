@@ -151,29 +151,32 @@ async fn change_display_output(
             .font(&FONT_4X6)
             .text_color(BinaryColor::On)
             .build();
-        info!("displaying mess {}", mess);
-        Text::with_baseline(mess, Point::zero(), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-        info!("waitnig for recv");
-        let mut bss_vec = CHANNEL.receive().await;
-        info!("recv channel to display");
-        for i in 1..11 {
-            if let Some(bss) = bss_vec.pop() {
-                let x = 6 * i;
+        info!("geting info from mutex");
+        BSS_VEC_MUTEX.lock(|vec| {
+            let bss_vec = vec.borrow_mut();
+            for i in 0..bss_vec.len() {
+                let bss: BssInfo = bss_vec[i];
+                let x = 6 * (i + 1);
                 if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
                     info!("will display {}", ssid_str);
                     Text::with_baseline(ssid_str, Point::new(0, x), text_style, Baseline::Top)
                         .draw(&mut display)
                         .unwrap();
                 }
-            };
-        }
+            }
+            if display.flush().is_err() {
+                info!("flushing failed");
+            } else {
+                info!("flushing successful");
+            }
+            info!("displayed");
+        });
 
-        if display.flush().is_err() {
-            info!("flushing failed");
-        } else {
-            info!("flushing successful");
+        let info = NEW_INFO_SEND.load(Ordering::Relaxed);
+        if info {
+            info!("creating new vector");
+            BSS_VEC_MUTEX.lock(|bss_vec_cell| bss_vec_cell.take().clear());
+            NEW_INFO_SEND.store(false, Ordering::Relaxed);
         }
         info!("displayed");
     }
