@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+use core::borrow::BorrowMut;
+use core::cell::{Cell, RefCell};
 use core::str;
 use core::sync::atomic::{AtomicBool, Ordering};
 use cyw43::BssInfo;
@@ -12,6 +14,7 @@ use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0, UART0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::uart::{self, Blocking};
 use embassy_rp::{bind_interrupts, gpio};
+use embassy_sync::blocking_mutex;
 use embassy_time::Timer;
 use embedded_graphics::{
     mono_font::{ascii::FONT_4X6, MonoTextStyleBuilder},
@@ -29,7 +32,7 @@ bind_interrupts!(struct Irqs {
 use embassy_executor::Executor;
 use embassy_rp::i2c::{self, Config, I2c};
 use embassy_rp::multicore::{self, spawn_core1};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
 use embassy_sync::channel::Channel;
 use heapless::Vec;
 
@@ -38,6 +41,8 @@ static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 static CHANNEL: Channel<CriticalSectionRawMutex, cyw43::BssInfo, 1> = Channel::new();
 static NEW_INFO_SEND: AtomicBool = AtomicBool::new(false);
+static BSS_VEC_MUTEX: blocking_mutex::Mutex<ThreadModeRawMutex, RefCell<Vec<BssInfo, 25>>> =
+    blocking_mutex::Mutex::new(RefCell::new(Vec::new()));
 
 #[embassy_executor::task]
 async fn wifi_task(
@@ -52,7 +57,7 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
 }
 
 #[embassy_executor::main]
-async fn main(spawner: Spawner) {
+async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("network set up");
     let network_button = Input::new(p.PIN_18, Pull::Up);
@@ -98,10 +103,8 @@ async fn main(spawner: Spawner) {
             }
             info!("executcor should run");
             executor1.run(|spawner| {
-                if spawner
-                    .spawn(change_display_output(display, "Scanned network"))
-                    .is_err()
-                {
+                unwrap!(spawner.spawn(update_networks_task()));
+                if spawner.spawn(change_display_output(display)).is_err() {
                     info!("fail to spawn  change_display_output");
                 } else {
                     info!("spawned change_display_output");
@@ -122,15 +125,28 @@ async fn main(spawner: Spawner) {
     });
 }
 #[embassy_executor::task]
+async fn update_networks_task() {
+    loop {
+        info!("waitnig for recv");
+        let bss = CHANNEL.receive().await;
+        info!("adding to mutex");
+        BSS_VEC_MUTEX.lock(|bss_vec| {
+            if bss_vec.borrow_mut().push(bss).is_err() {
+                info!("Vec is overflow")
+            } else {
+                info!("Added bss to Vec")
+            }
+        })
+    }
+}
+#[embassy_executor::task]
 async fn change_display_output(
     mut display: Ssd1306<
         I2CInterface<I2c<'static, I2C0, i2c::Blocking>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
-    mess: &'static str,
 ) {
-    let mut bss_vec: Vec<BssInfo, 10> = Vec::new();
     info!("clearing display");
     if display.clear(BinaryColor::Off).is_err() {
         info!("clearing failed");
@@ -143,66 +159,58 @@ async fn change_display_output(
         info!("flushing successful");
     }
     loop {
+        Timer::after_millis(10).await;
         info!("clearing display");
         if display.clear(BinaryColor::Off).is_err() {
             info!("clearing failed");
         } else {
             info!("clearing successful");
         }
-        Timer::after_millis(50).await;
         let text_style = MonoTextStyleBuilder::new()
             .font(&FONT_4X6)
             .text_color(BinaryColor::On)
             .build();
-        info!("displaying mess {}", mess);
-        Text::with_baseline(mess, Point::zero(), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-        info!("waitnig for recv");
-        let bss = CHANNEL.receive().await;
-        info!("add BssInfo to vec");
-        if bss_vec.push(bss).is_err() {
-            info!("Vec is overflow")
-        } else {
-            info!("Added bss to Vec")
-        }
-        info!("recv channel to display");
-        for i in 0..bss_vec.len() {
-            let bss: BssInfo = bss_vec[i];
-            let x = 6 * (i + 1);
-            if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
-                let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
-                if ssid_str.is_empty() {
-                    ssid_str = "Unknown ssid";
+        info!("geting info from mutex");
+        let bss_vec = BSS_VEC_MUTEX.lock(|vec| {
+            let bss_vec = vec.borrow_mut();
+            for i in 0..bss_vec.len() {
+                let bss: BssInfo = bss_vec[i];
+                let x = 6 * (i + 1);
+                if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
+                    let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
+                    if ssid_str.is_empty() {
+                        ssid_str = "Unknown ssid";
+                    }
+                    info!(
+                        "will display {} length is {} ssid length is {}",
+                        ssid_str,
+                        ssid_str.len(),
+                        bss.ssid_len,
+                    );
+                    let postions = x.try_into().unwrap();
+                    Text::with_baseline(
+                        ssid_str.trim(),
+                        Point::new(0, postions),
+                        text_style,
+                        Baseline::Top,
+                    )
+                    .draw(&mut display)
+                    .unwrap();
                 }
-                info!(
-                    "will display {} length is {} ssid length is {}",
-                    ssid_str,
-                    ssid_str.len(),
-                    bss.ssid_len,
-                );
-                let postions = x.try_into().unwrap();
-                Text::with_baseline(
-                    ssid_str.trim(),
-                    Point::new(0, postions),
-                    text_style,
-                    Baseline::Top,
-                )
-                .draw(&mut display)
-                .unwrap();
             }
-        }
-
-        if display.flush().is_err() {
-            info!("flushing failed");
-        } else {
-            info!("flushing successful");
-        }
-        info!("displayed");
+            if display.flush().is_err() {
+                info!("flushing failed");
+            } else {
+                info!("flushing successful");
+            }
+            info!("displayed");
+        });
+        info!("got info from mutex");
+        //third taks
         let info = NEW_INFO_SEND.load(Ordering::Relaxed);
         if info {
             info!("creating new vector");
-            bss_vec = Vec::new();
+            BSS_VEC_MUTEX.lock(|bss_vec_cell| bss_vec_cell.take().clear());
             NEW_INFO_SEND.store(false, Ordering::Relaxed);
         }
     }
@@ -230,7 +238,7 @@ async fn scan_networks_task(
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
     info!("waiting for 2 seconds");
-    Timer::after_secs(2).await;
+    Timer::after_secs(1).await;
     loop {
         info!("print networks");
         let mut scanner = control.scan(Default::default()).await;
