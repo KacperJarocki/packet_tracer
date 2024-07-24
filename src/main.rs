@@ -42,6 +42,7 @@ static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 static CHANNEL: Channel<CriticalSectionRawMutex, cyw43::BssInfo, 1> = Channel::new();
 static NEW_INFO_SEND: AtomicBool = AtomicBool::new(false);
+static VIEW_MORE_INFO: AtomicBool = AtomicBool::new(false);
 static BSS_VEC_MUTEX: blocking_mutex::Mutex<ThreadModeRawMutex, RefCell<Vec<BssInfo, 25>>> =
     blocking_mutex::Mutex::new(RefCell::new(Vec::new()));
 static INDEX_NETWORKS: AtomicUsize = AtomicUsize::new(0);
@@ -114,6 +115,7 @@ async fn main(_spawner: Spawner) {
                 } else {
                     debug!("spawned change_display_output");
                 }
+                unwrap!(spawner.spawn(in_out_button_task(in_out_button)));
                 unwrap!(spawner.spawn(down_button_task(down_button)));
                 unwrap!(spawner.spawn(up_button_task(up_button)));
             });
@@ -145,7 +147,14 @@ async fn down_button_task(mut button: Input<'static>) {
     }
 }
 #[embassy_executor::task]
-async fn in_out_button_task(mut button: Input<'static>) {}
+async fn in_out_button_task(mut button: Input<'static>) {
+    loop {
+        button.wait_for_falling_edge().await;
+        let stored = VIEW_MORE_INFO.load(Ordering::Relaxed);
+        let new = !stored;
+        VIEW_MORE_INFO.store(new, Ordering::Relaxed);
+    }
+}
 #[embassy_executor::task]
 async fn update_networks_task() {
     loop {
@@ -203,15 +212,36 @@ async fn change_display_output(
             };
             info!("index {}, end {}", index, end);
             let mut y: i32 = 0;
-            for i in index..end {
-                let bss: BssInfo = bss_vec[i];
-                let x = 12 * y;
+            let go_in_or_go_out = VIEW_MORE_INFO.load(Ordering::Relaxed);
+            if !go_in_or_go_out {
+                for i in index..end {
+                    let bss: BssInfo = bss_vec[i];
+                    let x = 12 * y;
+                    if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
+                        let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
+                        if ssid_str.is_empty() {
+                            ssid_str = "Unknown ssid";
+                        }
+                        let postions = x;
+                        Text::with_baseline(
+                            ssid_str.trim(),
+                            Point::new(0, postions),
+                            text_style,
+                            Baseline::Top,
+                        )
+                        .draw(&mut display)
+                        .unwrap();
+                    }
+                    y += 1;
+                }
+            } else {
+                let bss = bss_vec[index];
                 if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
                     let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
                     if ssid_str.is_empty() {
                         ssid_str = "Unknown ssid";
                     }
-                    let postions = x;
+                    let postions = 0;
                     Text::with_baseline(
                         ssid_str.trim(),
                         Point::new(0, postions),
@@ -221,7 +251,6 @@ async fn change_display_output(
                     .draw(&mut display)
                     .unwrap();
                 }
-                y += 1;
             }
             if display.flush().is_err() {
                 debug!("flushing failed");
