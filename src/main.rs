@@ -1,7 +1,10 @@
 #![no_std]
 #![no_main]
 
+use core::borrow::BorrowMut;
+use core::cell::RefCell;
 use core::str;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use cyw43::BssInfo;
 use cyw43_pio::PioSpi;
 use defmt::{info, *};
@@ -11,9 +14,11 @@ use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0, UART0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::uart::{self, Blocking};
 use embassy_rp::{bind_interrupts, gpio};
+use embassy_sync::blocking_mutex;
 use embassy_time::Timer;
+use embedded_graphics::mono_font::iso_8859_7::FONT_6X12;
 use embedded_graphics::{
-    mono_font::{ascii::FONT_4X6, MonoTextStyleBuilder},
+    mono_font::MonoTextStyleBuilder,
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Baseline, Text},
@@ -28,14 +33,19 @@ bind_interrupts!(struct Irqs {
 use embassy_executor::Executor;
 use embassy_rp::i2c::{self, Config, I2c};
 use embassy_rp::multicore::{self, spawn_core1};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
 use embassy_sync::channel::Channel;
 use heapless::Vec;
 
 static mut CORE1_STACK: multicore::Stack<8192> = multicore::Stack::new();
 static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
-static CHANNEL: Channel<CriticalSectionRawMutex, Vec<cyw43::BssInfo, 10>, 1> = Channel::new();
+static CHANNEL: Channel<CriticalSectionRawMutex, cyw43::BssInfo, 1> = Channel::new();
+static NEW_INFO_SEND: AtomicBool = AtomicBool::new(false);
+static VIEW_MORE_INFO: AtomicBool = AtomicBool::new(false);
+static BSS_VEC_MUTEX: blocking_mutex::Mutex<ThreadModeRawMutex, RefCell<Vec<BssInfo, 25>>> =
+    blocking_mutex::Mutex::new(RefCell::new(Vec::new()));
+static INDEX_NETWORKS: AtomicUsize = AtomicUsize::new(0);
 
 #[embassy_executor::task]
 async fn wifi_task(
@@ -50,7 +60,7 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
 }
 
 #[embassy_executor::main]
-async fn main(spawner: Spawner) {
+async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("network set up");
     let network_button = Input::new(p.PIN_18, Pull::Up);
@@ -79,10 +89,13 @@ async fn main(spawner: Spawner) {
         unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
         move || {
             let executor1 = EXECUTOR1.init(Executor::new());
-            info!("set up led");
-            let led_button = Input::new(p.PIN_16, Pull::Up);
-            let led = Output::new(p.PIN_17, Level::High);
-            info!("set up i2c ");
+            debug!("set up led");
+            let _led_button = Input::new(p.PIN_16, Pull::Up);
+            let _led = Output::new(p.PIN_17, Level::High);
+            let up_button = Input::new(p.PIN_15, Pull::Up);
+            let down_button = Input::new(p.PIN_14, Pull::Up);
+            let in_out_button = Input::new(p.PIN_13, Pull::Up);
+            debug!("set up i2c ");
             let sda = p.PIN_20;
             let scl = p.PIN_21;
             let i2c = i2c::I2c::new_blocking(p.I2C0, scl, sda, Config::default());
@@ -90,34 +103,72 @@ async fn main(spawner: Spawner) {
             let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
                 .into_buffered_graphics_mode();
             if display.init().is_err() {
-                info!("display init failed");
+                debug!("display init failed");
             } else {
-                info!("display init successful");
+                debug!("display init successful");
             }
-            info!("executcor should run");
+            debug!("executcor should run");
             executor1.run(|spawner| {
-                if spawner
-                    .spawn(change_display_output(display, "hello form core 1"))
-                    .is_err()
-                {
-                    info!("fail to spawn  change_display_output");
+                unwrap!(spawner.spawn(update_networks_task()));
+                if spawner.spawn(change_display_output(display)).is_err() {
+                    debug!("fail to spawn change_display_output");
                 } else {
-                    info!("spawned change_display_output");
+                    debug!("spawned change_display_output");
                 }
-                if spawner.spawn(button_task(led_button, led)).is_err() {
-                    info!("fail to spawn button_task");
-                } else {
-                    info!("spawned button_task");
-                };
+                unwrap!(spawner.spawn(in_out_button_task(in_out_button)));
+                unwrap!(spawner.spawn(down_button_task(down_button)));
+                unwrap!(spawner.spawn(up_button_task(up_button)));
             });
         },
     );
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
-        info!("spawning tasks");
+        debug!("spawning tasks");
         unwrap!(spawner.spawn(wifi_task(runner)));
         unwrap!(spawner.spawn(scan_networks_task(control, uart, clm, network_button)));
     });
+}
+#[embassy_executor::task]
+async fn up_button_task(mut button: Input<'static>) {
+    loop {
+        button.wait_for_falling_edge().await;
+        let mut index = INDEX_NETWORKS.load(Ordering::Relaxed);
+        index += 1;
+        INDEX_NETWORKS.store(index, Ordering::Relaxed);
+    }
+}
+#[embassy_executor::task]
+async fn down_button_task(mut button: Input<'static>) {
+    loop {
+        button.wait_for_falling_edge().await;
+        let index = INDEX_NETWORKS.load(Ordering::Relaxed);
+        let new_index = index.saturating_sub(1);
+        INDEX_NETWORKS.store(new_index, Ordering::Relaxed);
+    }
+}
+#[embassy_executor::task]
+async fn in_out_button_task(mut button: Input<'static>) {
+    loop {
+        button.wait_for_falling_edge().await;
+        let stored = VIEW_MORE_INFO.load(Ordering::Relaxed);
+        let new = !stored;
+        VIEW_MORE_INFO.store(new, Ordering::Relaxed);
+    }
+}
+#[embassy_executor::task]
+async fn update_networks_task() {
+    loop {
+        debug!("waitnig for recv");
+        let bss = CHANNEL.receive().await;
+        info!("adding to mutex");
+        BSS_VEC_MUTEX.lock(|bss_vec| {
+            if bss_vec.borrow_mut().push(bss).is_err() {
+                info!("Vec is overflow")
+            } else {
+                info!("Added bss to Vec")
+            }
+        })
+    }
 }
 #[embassy_executor::task]
 async fn change_display_output(
@@ -126,7 +177,6 @@ async fn change_display_output(
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
-    mess: &'static str,
 ) {
     info!("clearing display");
     if display.clear(BinaryColor::Off).is_err() {
@@ -140,53 +190,85 @@ async fn change_display_output(
         info!("flushing successful");
     }
     loop {
+        Timer::after_millis(10).await;
         info!("clearing display");
         if display.clear(BinaryColor::Off).is_err() {
             info!("clearing failed");
         } else {
             info!("clearing successful");
         }
-        Timer::after_millis(50).await;
         let text_style = MonoTextStyleBuilder::new()
-            .font(&FONT_4X6)
+            .font(&FONT_6X12)
             .text_color(BinaryColor::On)
             .build();
-        info!("displaying mess {}", mess);
-        Text::with_baseline(mess, Point::zero(), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-        info!("waitnig for recv");
-        let mut bss_vec = CHANNEL.receive().await;
-        info!("recv channel to display");
-        for i in 1..11 {
-            if let Some(bss) = bss_vec.pop() {
-                let x = 6 * i;
-                if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
-                    info!("will display {}", ssid_str);
-                    Text::with_baseline(ssid_str, Point::new(0, x), text_style, Baseline::Top)
+        let index = INDEX_NETWORKS.load(Ordering::Relaxed);
+        BSS_VEC_MUTEX.lock(|vec| {
+            let bss_vec = vec.borrow_mut();
+            let mut end;
+            if index + 5 > bss_vec.len() {
+                end = bss_vec.len();
+            } else {
+                end = index + 5;
+            };
+            info!("index {}, end {}", index, end);
+            let mut y: i32 = 0;
+            let go_in_or_go_out = VIEW_MORE_INFO.load(Ordering::Relaxed);
+            if !go_in_or_go_out {
+                for i in index..end {
+                    let bss: BssInfo = bss_vec[i];
+                    let x = 12 * y;
+                    if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
+                        let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
+                        if ssid_str.is_empty() {
+                            ssid_str = "Unknown ssid";
+                        }
+                        let postions = x;
+                        Text::with_baseline(
+                            ssid_str.trim(),
+                            Point::new(0, postions),
+                            text_style,
+                            Baseline::Top,
+                        )
                         .draw(&mut display)
                         .unwrap();
+                    }
+                    y += 1;
                 }
-            };
-        }
+            } else {
+                let bss = bss_vec[index];
+                if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
+                    let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
+                    if ssid_str.is_empty() {
+                        ssid_str = "Unknown ssid";
+                    }
+                    let postions = 0;
+                    Text::with_baseline(
+                        ssid_str.trim(),
+                        Point::new(0, postions),
+                        text_style,
+                        Baseline::Top,
+                    )
+                    .draw(&mut display)
+                    .unwrap();
+                }
+            }
+            if display.flush().is_err() {
+                debug!("flushing failed");
+            } else {
+                debug!("flushing successful");
+            }
+            debug!("displayed");
+        });
 
-        if display.flush().is_err() {
-            info!("flushing failed");
-        } else {
-            info!("flushing successful");
+        let info = NEW_INFO_SEND.load(Ordering::Relaxed);
+        if info {
+            debug!("creating new vector");
+            BSS_VEC_MUTEX.lock(|bss_vec_cell| bss_vec_cell.take().clear());
+            NEW_INFO_SEND.store(false, Ordering::Relaxed);
         }
-        info!("displayed");
     }
 }
 
-#[embassy_executor::task]
-async fn button_task(mut button: Input<'static>, mut led: Output<'static>) {
-    loop {
-        button.wait_for_falling_edge().await;
-        led.toggle();
-        info!("i am in another task");
-    }
-}
 #[embassy_executor::task]
 async fn scan_networks_task(
     mut control: cyw43::Control<'static>,
@@ -201,20 +283,13 @@ async fn scan_networks_task(
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
     info!("waiting for 2 seconds");
-    Timer::after_secs(2).await;
+    Timer::after_secs(1).await;
     loop {
-        info!("create a new vec");
-        let mut bss_vec: Vec<BssInfo, 10> = Vec::new();
         info!("print networks");
         let mut scanner = control.scan(Default::default()).await;
         info!("scanning");
         while let Some(bss) = scanner.next().await {
-            info!("add BssInfo to vec");
-            if bss_vec.push(bss).is_err() {
-                info!("Vec is overflow")
-            } else {
-                info!("Added bss to Vec")
-            }
+            CHANNEL.send(bss).await;
             if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
                 info!("scanned {} == {:x}", ssid_str, bss.bssid);
                 uart.blocking_write("Network: ".as_bytes()).unwrap();
@@ -225,9 +300,9 @@ async fn scan_networks_task(
             }
         }
 
-        info!("sending bss_vec to channel");
-        CHANNEL.send(bss_vec).await;
         info!("waiting for button");
         button.wait_for_falling_edge().await;
+        info!("should delete all info in other task");
+        NEW_INFO_SEND.store(true, Ordering::Relaxed)
     }
 }
