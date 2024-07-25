@@ -1,13 +1,13 @@
 #![no_std]
 #![no_main]
 
-use core::borrow::BorrowMut;
 use core::cell::RefCell;
+use core::fmt::Write;
 use core::str;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use cyw43::BssInfo;
 use cyw43_pio::PioSpi;
-use defmt::{info, *};
+use defmt::{debug, info, unwrap};
 use embassy_executor::Spawner;
 use embassy_net::Stack;
 use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0, UART0};
@@ -135,6 +135,7 @@ async fn up_button_task(mut button: Input<'static>) {
         let mut index = INDEX_NETWORKS.load(Ordering::Relaxed);
         index += 1;
         INDEX_NETWORKS.store(index, Ordering::Relaxed);
+        Timer::after_millis(100).await;
     }
 }
 #[embassy_executor::task]
@@ -144,6 +145,7 @@ async fn down_button_task(mut button: Input<'static>) {
         let index = INDEX_NETWORKS.load(Ordering::Relaxed);
         let new_index = index.saturating_sub(1);
         INDEX_NETWORKS.store(new_index, Ordering::Relaxed);
+        Timer::after_millis(100).await;
     }
 }
 #[embassy_executor::task]
@@ -153,6 +155,7 @@ async fn in_out_button_task(mut button: Input<'static>) {
         let stored = VIEW_MORE_INFO.load(Ordering::Relaxed);
         let new = !stored;
         VIEW_MORE_INFO.store(new, Ordering::Relaxed);
+        Timer::after_millis(100).await;
     }
 }
 #[embassy_executor::task]
@@ -204,21 +207,24 @@ async fn change_display_output(
         let index = INDEX_NETWORKS.load(Ordering::Relaxed);
         BSS_VEC_MUTEX.lock(|vec| {
             let bss_vec = vec.borrow_mut();
-            let mut end;
-            if index + 5 > bss_vec.len() {
-                end = bss_vec.len();
-            } else {
-                end = index + 5;
+            let end = match index + 5 > bss_vec.len() {
+                true => bss_vec.len(),
+                false => index + 5,
             };
             info!("index {}, end {}", index, end);
-            let mut y: i32 = 0;
+            let mut y: i32 = 1;
             let go_in_or_go_out = VIEW_MORE_INFO.load(Ordering::Relaxed);
             if !go_in_or_go_out {
+                let mut buffer: heapless::String<30> = heapless::String::new();
+                write!(buffer, "Networks:       {}/{}", index, bss_vec.len()).ok();
+                Text::with_baseline(buffer.as_str(), Point::new(0, 0), text_style, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
                 for i in index..end {
                     let bss: BssInfo = bss_vec[i];
                     let x = 12 * y;
                     if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
-                        let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
+                        let (mut ssid_str, _) = ssid_str.split_at(bss.ssid_len.into());
                         if ssid_str.is_empty() {
                             ssid_str = "Unknown ssid";
                         }
@@ -235,21 +241,22 @@ async fn change_display_output(
                     y += 1;
                 }
             } else {
+                let mut buffer: heapless::String<128> = heapless::String::new();
                 let bss = bss_vec[index];
                 if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
                     let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
                     if ssid_str.is_empty() {
                         ssid_str = "Unknown ssid";
                     }
-                    let postions = 0;
-                    Text::with_baseline(
-                        ssid_str.trim(),
-                        Point::new(0, postions),
-                        text_style,
-                        Baseline::Top,
-                    )
-                    .draw(&mut display)
-                    .unwrap();
+                    write!(buffer, "SSID: {}", ssid_str).ok();
+                    write!(buffer, "\nChannel: {}", bss.chanspec).ok();
+                    write!(buffer, "\nRSSI: {}", bss.rssi).ok();
+                    write!(buffer, "\nBSSID: {:02X?}", bss.bssid).ok();
+                    write!(buffer, "\nFlags: {}", bss.flags).ok();
+                    let buffer = buffer.as_str();
+                    Text::with_baseline(buffer, Point::zero(), text_style, Baseline::Top)
+                        .draw(&mut display)
+                        .unwrap();
                 }
             }
             if display.flush().is_err() {
@@ -291,12 +298,14 @@ async fn scan_networks_task(
         while let Some(bss) = scanner.next().await {
             CHANNEL.send(bss).await;
             if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
+                let mut buffer: heapless::String<128> = heapless::String::new();
                 info!("scanned {} == {:x}", ssid_str, bss.bssid);
-                uart.blocking_write("Network: ".as_bytes()).unwrap();
-                uart.blocking_write(ssid_str.as_bytes()).unwrap();
-                uart.blocking_write(" bssid: ".as_bytes()).unwrap();
-                uart.blocking_write(&bss.bssid).unwrap();
-                uart.blocking_write("\n\r".as_bytes()).unwrap();
+                write!(buffer, "SSID: {}", ssid_str).ok();
+                write!(buffer, "\nChannel: {}", bss.chanspec).ok();
+                write!(buffer, "\nRSSI: {}", bss.rssi).ok();
+                write!(buffer, "\nBSSID: {:02X?}", bss.bssid).ok();
+                write!(buffer, "\nFlags: {}\n\r", bss.flags).ok();
+                uart.blocking_write(buffer.as_bytes()).unwrap();
             }
         }
 
