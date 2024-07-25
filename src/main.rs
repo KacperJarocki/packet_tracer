@@ -204,11 +204,9 @@ async fn change_display_output(
         let index = INDEX_NETWORKS.load(Ordering::Relaxed);
         BSS_VEC_MUTEX.lock(|vec| {
             let bss_vec = vec.borrow_mut();
-            let mut end;
-            if index + 5 > bss_vec.len() {
-                end = bss_vec.len();
-            } else {
-                end = index + 5;
+            let end = match index + 5 > bss_vec.len() {
+                true => bss_vec.len(),
+                false => index + 5,
             };
             info!("index {}, end {}", index, end);
             let mut y: i32 = 0;
