@@ -135,6 +135,7 @@ async fn up_button_task(mut button: Input<'static>) {
         let mut index = INDEX_NETWORKS.load(Ordering::Relaxed);
         index += 1;
         INDEX_NETWORKS.store(index, Ordering::Relaxed);
+        Timer::after_millis(100).await;
     }
 }
 #[embassy_executor::task]
@@ -144,6 +145,7 @@ async fn down_button_task(mut button: Input<'static>) {
         let index = INDEX_NETWORKS.load(Ordering::Relaxed);
         let new_index = index.saturating_sub(1);
         INDEX_NETWORKS.store(new_index, Ordering::Relaxed);
+        Timer::after_millis(100).await;
     }
 }
 #[embassy_executor::task]
@@ -153,6 +155,7 @@ async fn in_out_button_task(mut button: Input<'static>) {
         let stored = VIEW_MORE_INFO.load(Ordering::Relaxed);
         let new = !stored;
         VIEW_MORE_INFO.store(new, Ordering::Relaxed);
+        Timer::after_millis(100).await;
     }
 }
 #[embassy_executor::task]
