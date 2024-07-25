@@ -1,13 +1,13 @@
 #![no_std]
 #![no_main]
 
-use core::borrow::BorrowMut;
 use core::cell::RefCell;
+use core::fmt::Write;
 use core::str;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use cyw43::BssInfo;
 use cyw43_pio::PioSpi;
-use defmt::{info, *};
+use defmt::{debug, info, unwrap};
 use embassy_executor::Spawner;
 use embassy_net::Stack;
 use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0, UART0};
@@ -209,14 +209,19 @@ async fn change_display_output(
                 false => index + 5,
             };
             info!("index {}, end {}", index, end);
-            let mut y: i32 = 0;
+            let mut y: i32 = 1;
             let go_in_or_go_out = VIEW_MORE_INFO.load(Ordering::Relaxed);
             if !go_in_or_go_out {
+                let mut buffer: heapless::String<30> = heapless::String::new();
+                write!(buffer, "Networks:       {}/{}", index, bss_vec.len()).ok();
+                Text::with_baseline(buffer.as_str(), Point::new(0, 0), text_style, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
                 for i in index..end {
                     let bss: BssInfo = bss_vec[i];
                     let x = 12 * y;
                     if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
-                        let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
+                        let (mut ssid_str, _) = ssid_str.split_at(bss.ssid_len.into());
                         if ssid_str.is_empty() {
                             ssid_str = "Unknown ssid";
                         }
@@ -233,21 +238,23 @@ async fn change_display_output(
                     y += 1;
                 }
             } else {
+                let mut buffer: heapless::String<64> = heapless::String::new();
                 let bss = bss_vec[index];
                 if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
                     let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
                     if ssid_str.is_empty() {
                         ssid_str = "Unknown ssid";
                     }
-                    let postions = 0;
-                    Text::with_baseline(
-                        ssid_str.trim(),
-                        Point::new(0, postions),
-                        text_style,
-                        Baseline::Top,
-                    )
-                    .draw(&mut display)
-                    .unwrap();
+                    write!(buffer, "SSID: {}\n", ssid_str).ok();
+                    write!(buffer, "Channel: {}\n", bss.chanspec).ok();
+                    write!(buffer, "RSSI: {}\n", bss.rssi).ok();
+                    write!(buffer, "BSSID: {:02X?}\n", bss.bssid).ok();
+                    write!(buffer, "SNR: {}\n", bss.snr).ok();
+                    let buffer = buffer.as_str();
+
+                    Text::with_baseline(buffer, Point::zero(), text_style, Baseline::Top)
+                        .draw(&mut display)
+                        .unwrap();
                 }
             }
             if display.flush().is_err() {
