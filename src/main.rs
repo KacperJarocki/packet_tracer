@@ -241,20 +241,19 @@ async fn change_display_output(
                     y += 1;
                 }
             } else {
-                let mut buffer: heapless::String<64> = heapless::String::new();
+                let mut buffer: heapless::String<128> = heapless::String::new();
                 let bss = bss_vec[index];
                 if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
                     let (mut ssid_str, _useless) = ssid_str.split_at(bss.ssid_len.into());
                     if ssid_str.is_empty() {
                         ssid_str = "Unknown ssid";
                     }
-                    write!(buffer, "SSID: {}\n", ssid_str).ok();
-                    write!(buffer, "Channel: {}\n", bss.chanspec).ok();
-                    write!(buffer, "RSSI: {}\n", bss.rssi).ok();
-                    write!(buffer, "BSSID: {:02X?}\n", bss.bssid).ok();
-                    write!(buffer, "SNR: {}\n", bss.snr).ok();
+                    write!(buffer, "SSID: {}", ssid_str).ok();
+                    write!(buffer, "\nChannel: {}", bss.chanspec).ok();
+                    write!(buffer, "\nRSSI: {}", bss.rssi).ok();
+                    write!(buffer, "\nBSSID: {:02X?}", bss.bssid).ok();
+                    write!(buffer, "\nFlags: {}", bss.flags).ok();
                     let buffer = buffer.as_str();
-
                     Text::with_baseline(buffer, Point::zero(), text_style, Baseline::Top)
                         .draw(&mut display)
                         .unwrap();
@@ -299,12 +298,14 @@ async fn scan_networks_task(
         while let Some(bss) = scanner.next().await {
             CHANNEL.send(bss).await;
             if let Ok(ssid_str) = str::from_utf8(&bss.ssid) {
+                let mut buffer: heapless::String<128> = heapless::String::new();
                 info!("scanned {} == {:x}", ssid_str, bss.bssid);
-                uart.blocking_write("Network: ".as_bytes()).unwrap();
-                uart.blocking_write(ssid_str.as_bytes()).unwrap();
-                uart.blocking_write(" bssid: ".as_bytes()).unwrap();
-                uart.blocking_write(&bss.bssid).unwrap();
-                uart.blocking_write("\n\r".as_bytes()).unwrap();
+                write!(buffer, "SSID: {}", ssid_str).ok();
+                write!(buffer, "\nChannel: {}", bss.chanspec).ok();
+                write!(buffer, "\nRSSI: {}", bss.rssi).ok();
+                write!(buffer, "\nBSSID: {:02X?}", bss.bssid).ok();
+                write!(buffer, "\nFlags: {}\n\r", bss.flags).ok();
+                uart.blocking_write(buffer.as_bytes()).unwrap();
             }
         }
 
